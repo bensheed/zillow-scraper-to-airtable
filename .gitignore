@@ -1,0 +1,4 @@
+.env
+__pycache__/
+*.pyc
+zillow_page_content.html
