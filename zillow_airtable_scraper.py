@@ -12,7 +12,8 @@ logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(
 
 # --- Load Environment Variables ---
 load_dotenv()
-AIRTABLE_API_KEY = os.getenv("AIRTABLE_API_KEY")
+# Use AIRTABLE_ACCESS_TOKEN now, as saved by config_app.py
+AIRTABLE_ACCESS_TOKEN = os.getenv("AIRTABLE_ACCESS_TOKEN")
 AIRTABLE_BASE_ID = os.getenv("AIRTABLE_BASE_ID")
 AIRTABLE_TABLE_NAME = os.getenv("AIRTABLE_TABLE_NAME")
 ZILLOW_SEARCH_URL = os.getenv("ZILLOW_SEARCH_URL")
@@ -122,17 +123,20 @@ def parse_zillow_html(html_content):
     return properties
 
 
-def send_to_airtable(data, api_key, base_id, table_name):
+# Updated function signature and logic to use access_token
+def send_to_airtable(data, access_token, base_id, table_name):
     """Sends the scraped property data to the specified Airtable table."""
-    if not all([api_key, base_id, table_name]):
-        logging.error("Missing Airtable credentials (API Key, Base ID, or Table Name) in .env file.")
+    # Updated check to use access_token
+    if not all([access_token, base_id, table_name]):
+        logging.error("Missing Airtable credentials (Access Token, Base ID, or Table Name) in .env file.")
         return False
     if not data:
         logging.warning("No data provided to send to Airtable.")
         return False
 
     try:
-        api = Api(api_key)
+        # Updated Api initialization to use access_token
+        api = Api(access_token)
         table = api.table(base_id, table_name)
         logging.info(f"Connected to Airtable. Attempting to send {len(data)} records to table '{table_name}'.")
 
@@ -164,13 +168,15 @@ if __name__ == "__main__":
     logging.info("--- Starting Zillow Scraper ---")
 
     # 1. Check Credentials
-    if not all([AIRTABLE_API_KEY, AIRTABLE_BASE_ID, AIRTABLE_TABLE_NAME, ZILLOW_SEARCH_URL]):
-        logging.error("One or more required environment variables (Airtable credentials, Zillow URL) are missing in .env. Exiting.")
+    # Updated to check for AIRTABLE_ACCESS_TOKEN
+    if not all([AIRTABLE_ACCESS_TOKEN, AIRTABLE_BASE_ID, AIRTABLE_TABLE_NAME, ZILLOW_SEARCH_URL]):
+        logging.error("One or more required environment variables (Airtable Access Token, Base ID, Table Name, Zillow URL) are missing in .env. Please run config_app.py first. Exiting.")
         exit(1)
-    if "YOUR_" in AIRTABLE_API_KEY or "YOUR_" in AIRTABLE_BASE_ID or "YOUR_" in AIRTABLE_TABLE_NAME or "YOUR_" in ZILLOW_SEARCH_URL:
-         logging.warning("Placeholder values detected in .env file. Please replace them with your actual credentials and Zillow URL.")
-         # Decide if you want to exit or proceed (e.g., for testing parsing locally)
-         # exit(1) # Uncomment to exit if placeholders are found
+    # Updated placeholder check
+    if "YOUR_" in AIRTABLE_ACCESS_TOKEN or "YOUR_" in AIRTABLE_BASE_ID or "YOUR_" in AIRTABLE_TABLE_NAME or "YOUR_" in ZILLOW_SEARCH_URL or not AIRTABLE_ACCESS_TOKEN.startswith("pat"): # Basic check for token format
+         logging.warning("Placeholder values or invalid token format detected in .env file. Please run config_app.py to set actual credentials and Zillow URL.")
+         # Decide if you want to exit or proceed
+         exit(1) # Exit if placeholders/invalid token found
 
     # 2. Fetch Data
     html = fetch_zillow_data(ZILLOW_SEARCH_URL)
@@ -181,7 +187,8 @@ if __name__ == "__main__":
 
         if properties_data:
             # 4. Send to Airtable
-            success = send_to_airtable(properties_data, AIRTABLE_API_KEY, AIRTABLE_BASE_ID, AIRTABLE_TABLE_NAME)
+            # Updated to pass AIRTABLE_ACCESS_TOKEN
+            success = send_to_airtable(properties_data, AIRTABLE_ACCESS_TOKEN, AIRTABLE_BASE_ID, AIRTABLE_TABLE_NAME)
             if success:
                 logging.info("--- Scraper finished successfully ---")
             else:
