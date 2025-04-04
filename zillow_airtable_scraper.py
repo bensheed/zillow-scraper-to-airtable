@@ -85,10 +85,14 @@ def parse_zillow_html(html_content):
 
     if not property_cards:
         logging.warning("Could not find property cards using the specified selectors. The website structure might have changed, or the page didn't load correctly (check for CAPTCHAs or blocks).")
-        # You might want to save the HTML content here for inspection:
-        # with open("zillow_page_content.html", "w", encoding="utf-8") as f:
-        #     f.write(html_content)
-        # logging.info("Saved HTML content to zillow_page_content.html for debugging.")
+        # Save the HTML content for debugging selectors
+        debug_file = "zillow_debug.html"
+        try:
+            with open(debug_file, "w", encoding="utf-8") as f:
+                f.write(html_content)
+            logging.info(f"Saved HTML content to {debug_file} for debugging selectors.")
+        except Exception as e:
+            logging.error(f"Could not save debug HTML file: {e}")
         return []
 
     logging.info(f"Found {len(property_cards)} potential property cards.")

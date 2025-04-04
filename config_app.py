@@ -392,7 +392,11 @@ def run_scraper():
         flash(f"Scraper process initiated (PID: {process.pid}). Check terminal or scraper_run.log for logs.", "success")
         session['show_run_button'] = False # Hide button after starting
     except Exception as e:
-        flash(f"Error starting scraper process: {e}", "error")
+        # Log the specific error for better debugging
+        error_details = f"Error details: {type(e).__name__} - {e}"
+        print(f"!!! Error in /run_scraper: {error_details}") # Print to Flask console
+        logging.error(f"Error starting scraper process: {error_details}") # Log to file if logging is configured
+        flash(f"Error starting scraper process. Check Flask server logs for details.", "error") # More generic message for user
 
     return redirect(url_for('config_page'))
 
