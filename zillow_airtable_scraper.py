@@ -21,34 +21,45 @@ ZILLOW_ZIP_CODE = os.getenv("ZILLOW_ZIP_CODE")
 
 # --- Functions ---
 
+# Import Playwright
+from playwright.sync_api import sync_playwright, TimeoutError as PlaywrightTimeoutError
+
 def fetch_zillow_data(url):
-    """Fetches HTML content from the Zillow search URL."""
+    """Fetches HTML content from the Zillow search URL using Playwright."""
     if not url or not url.startswith('http'):
-        logging.error("Invalid or missing ZILLOW_SEARCH_URL in .env file.")
+        logging.error("Invalid Zillow URL provided.")
         return None
 
-    headers = {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
-        'Accept-Language': 'en-US,en;q=0.9',
-        'Accept-Encoding': 'gzip, deflate, br',
-        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,image/apng,*/*;q=0.8',
-        'Connection': 'keep-alive'
-    }
-    logging.info(f"Attempting to fetch data from: {url}")
-    try:
-        # Add a small random delay
-        time.sleep(random.uniform(2, 5))
-        response = requests.get(url, headers=headers, timeout=20)
-        response.raise_for_status() # Raise an exception for bad status codes (4xx or 5xx)
-        logging.info(f"Successfully fetched data (Status Code: {response.status_code}).")
-        return response.text
-    except requests.exceptions.RequestException as e:
-        logging.error(f"Error fetching Zillow data: {e}")
-        if hasattr(e, 'response') and e.response is not None:
-            logging.error(f"Response status code: {e.response.status_code}")
-            # Consider saving or logging e.response.text for debugging anti-scraping measures
-            # logging.debug(f"Response content: {e.response.text[:500]}...") # Be careful logging potentially large responses
-        return None
+    logging.info(f"Attempting to fetch data from: {url} using Playwright")
+    html_content = None
+    with sync_playwright() as p:
+        # Try launching Chromium - other browsers like firefox or webkit can also be used
+        try:
+            browser = p.chromium.launch(headless=True) # Run headless (no visible browser window)
+            page = browser.new_page(
+                user_agent='Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
+            )
+            logging.info(f"Navigating to {url}...")
+            # Increase timeout, wait until network is idle or load state is reached
+            page.goto(url, timeout=60000, wait_until='networkidle') # 60 second timeout, wait for network activity to cease
+            logging.info("Page loaded, waiting for potential dynamic content...")
+            # Optional: Add specific waits for elements if needed, e.g., page.wait_for_selector('.list-card', timeout=15000)
+            time.sleep(random.uniform(3, 7)) # Add a random delay after load
+            html_content = page.content()
+            logging.info(f"Successfully fetched page content (Length: {len(html_content)}).")
+            browser.close()
+        except PlaywrightTimeoutError:
+            logging.error(f"Timeout error while loading {url}")
+            if 'browser' in locals() and browser.is_connected():
+                 browser.close()
+            return None
+        except Exception as e:
+            logging.error(f"Error fetching Zillow data using Playwright: {e}")
+            if 'browser' in locals() and browser.is_connected():
+                 browser.close()
+            return None
+
+    return html_content
 
 def parse_zillow_html(html_content):
     """Parses the Zillow HTML to extract property listings."""
