@@ -32,33 +32,41 @@ def fetch_zillow_data(url):
 
     logging.info(f"Attempting to fetch data from: {url} using Playwright")
     html_content = None
-    with sync_playwright() as p:
-        # Try launching Chromium - other browsers like firefox or webkit can also be used
-        try:
+    browser = None # Initialize browser variable
+    try:
+        logging.info("Initializing Playwright...")
+        with sync_playwright() as p:
+            logging.info("Launching browser (Chromium)...")
+            # Try launching Chromium - other browsers like firefox or webkit can also be used
             browser = p.chromium.launch(headless=True) # Run headless (no visible browser window)
+            logging.info("Browser launched. Creating new page...")
             page = browser.new_page(
                 user_agent='Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
             )
             logging.info(f"Navigating to {url}...")
-            # Increase timeout, wait until network is idle or load state is reached
-            page.goto(url, timeout=60000, wait_until='networkidle') # 60 second timeout, wait for network activity to cease
-            logging.info("Page loaded, waiting for potential dynamic content...")
-            # Optional: Add specific waits for elements if needed, e.g., page.wait_for_selector('.list-card', timeout=15000)
-            time.sleep(random.uniform(3, 7)) # Add a random delay after load
+            # Increase timeout, wait until 'load' state is reached
+            page.goto(url, timeout=90000, wait_until='load') # 90 second timeout, wait for load event
+            logging.info("Page 'load' event fired. Waiting a bit longer for dynamic content...")
+            # Optional: Add specific waits for elements if needed, e.g., page.wait_for_selector('.list-card', timeout=30000)
+            time.sleep(random.uniform(5, 10)) # Increase delay slightly after load
             html_content = page.content()
             logging.info(f"Successfully fetched page content (Length: {len(html_content)}).")
-            browser.close()
-        except PlaywrightTimeoutError:
-            logging.error(f"Timeout error while loading {url}")
-            if 'browser' in locals() and browser.is_connected():
-                 browser.close()
-            return None
-        except Exception as e:
-            logging.error(f"Error fetching Zillow data using Playwright: {e}")
-            if 'browser' in locals() and browser.is_connected():
-                 browser.close()
-            return None
+            logging.info("Closing browser...")
+            browser.close() # Close browser inside the 'with' block if successful
+            logging.info("Browser closed.")
+    # Keep separate except blocks for clarity
+    except PlaywrightTimeoutError:
+        logging.error(f"Timeout error (90s) while loading {url}")
+        # No need to close browser here, 'with' context manager handles it if launch succeeded
+        return None
+    except Exception as e:
+        logging.error(f"Error during Playwright fetch for {url}: {type(e).__name__} - {e}")
+        import traceback
+        logging.error(f"Traceback: {traceback.format_exc()}") # Log full traceback
+        # No need to close browser here, 'with' context manager handles it if launch succeeded
+        return None
 
+    # Return statement remains outside the 'with' block
     return html_content
 
 def parse_zillow_html(html_content):
