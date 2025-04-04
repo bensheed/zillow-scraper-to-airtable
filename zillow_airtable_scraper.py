@@ -15,8 +15,8 @@ load_dotenv()
 # Use AIRTABLE_ACCESS_TOKEN now, as saved by config_app.py
 AIRTABLE_ACCESS_TOKEN = os.getenv("AIRTABLE_ACCESS_TOKEN")
 AIRTABLE_BASE_ID = os.getenv("AIRTABLE_BASE_ID")
-AIRTABLE_TABLE_NAME = os.getenv("AIRTABLE_TABLE_NAME") # Note: We might remove this later if creating tables per ZIP
-ZILLOW_ZIP_CODE = os.getenv("ZILLOW_ZIP_CODE") # Changed variable
+# AIRTABLE_TABLE_NAME = os.getenv("AIRTABLE_TABLE_NAME") # Removed - will be derived from ZIP
+ZILLOW_ZIP_CODE = os.getenv("ZILLOW_ZIP_CODE")
 
 # --- Functions ---
 
@@ -123,44 +123,50 @@ def parse_zillow_html(html_content):
     return properties
 
 
-# Updated function signature and logic to use access_token
-def send_to_airtable(data, access_token, base_id, table_name):
-    """Sends the scraped property data to the specified Airtable table."""
-    # Updated check to use access_token
-    if not all([access_token, base_id, table_name]):
-        logging.error("Missing Airtable credentials (Access Token, Base ID, or Table Name) in .env file.")
+# Updated function signature: removed table_name parameter
+def send_to_airtable(data, access_token, base_id, zip_code):
+    """Sends the scraped property data to an Airtable table named after the ZIP code."""
+    # Determine table name from ZIP code
+    table_name = f"ZIP_{zip_code}"
+
+    # Updated check: removed table_name
+    if not all([access_token, base_id, zip_code]):
+        logging.error("Missing Airtable credentials (Access Token, Base ID) or ZIP Code.")
         return False
     if not data:
         logging.warning("No data provided to send to Airtable.")
         return False
 
-    try:
-        # Updated Api initialization to use access_token
-        api = Api(access_token)
-        table = api.table(base_id, table_name)
-        logging.info(f"Connected to Airtable. Attempting to send {len(data)} records to table '{table_name}'.")
+    # TODO: Implement table existence check and creation using Airtable Metadata API
+    # TODO: Implement upsert logic using MLS ID as key field
 
-        # Consider checking for duplicates before adding if necessary
-        # This might involve fetching existing records first
+    try:
+        api = Api(access_token)
+        # Get table object using the derived name
+        table = api.table(base_id, table_name)
+        logging.info(f"Attempting to send {len(data)} records to table '{table_name}' in base '{base_id}'.")
 
         added_count = 0
         for record in data:
              try:
                  # Ensure keys in 'record' match Airtable field names
+                 # TODO: Change table.create to table.upsert once MLS ID is added and set as key field
                  table.create(record)
                  added_count += 1
                  logging.debug(f"Added record to Airtable: {record.get('Address', 'N/A')}")
                  time.sleep(0.2) # Airtable API rate limit is typically 5 requests per second
              except Exception as e:
-                 logging.error(f"Failed to add record {record.get('Address', 'N/A')} to Airtable: {e}")
+                 logging.error(f"Failed to add record {record.get('Address', 'N/A')} to Airtable table '{table_name}': {e}")
                  # Consider logging the specific record data that failed
                  # logging.debug(f"Failed record data: {record}")
 
-        logging.info(f"Successfully added {added_count}/{len(data)} records to Airtable.")
+        logging.info(f"Successfully added {added_count}/{len(data)} records to Airtable table '{table_name}'.")
         return added_count > 0
 
     except Exception as e:
-        logging.error(f"Error connecting to or writing to Airtable: {e}")
+        # This might catch errors if the table doesn't exist yet
+        logging.error(f"Error connecting to or writing to Airtable table '{table_name}': {e}")
+        logging.error(f"Ensure table '{table_name}' exists in base '{base_id}' with correct columns (Address, Price, Beds, Baths, Sqft, URL).")
         return False
 
 # --- Main Execution ---
@@ -168,16 +174,15 @@ if __name__ == "__main__":
     logging.info("--- Starting Zillow Scraper ---")
 
     # 1. Check Credentials
-    # Updated to check for ZILLOW_ZIP_CODE
-    if not all([AIRTABLE_ACCESS_TOKEN, AIRTABLE_BASE_ID, AIRTABLE_TABLE_NAME, ZILLOW_ZIP_CODE]):
-        logging.error("One or more required environment variables (Airtable Access Token, Base ID, Table Name, Zillow ZIP Code) are missing in .env. Please run config_app.py first. Exiting.")
+    # Updated check: Removed AIRTABLE_TABLE_NAME
+    if not all([AIRTABLE_ACCESS_TOKEN, AIRTABLE_BASE_ID, ZILLOW_ZIP_CODE]):
+        logging.error("One or more required environment variables (Airtable Access Token, Base ID, Zillow ZIP Code) are missing in .env. Please run config_app.py first. Exiting.")
         exit(1)
-    # Updated placeholder/format check
+    # Updated placeholder/format check: Removed AIRTABLE_TABLE_NAME
     if "YOUR_" in AIRTABLE_ACCESS_TOKEN or not AIRTABLE_ACCESS_TOKEN.startswith("pat") \
        or "YOUR_" in AIRTABLE_BASE_ID \
-       or "YOUR_" in AIRTABLE_TABLE_NAME \
        or not (ZILLOW_ZIP_CODE and ZILLOW_ZIP_CODE.isdigit() and len(ZILLOW_ZIP_CODE) == 5):
-         logging.warning("Placeholder values or invalid token/ZIP code format detected in .env file. Please run config_app.py to set actual credentials and ZIP Code.")
+         logging.warning("Placeholder values or invalid token/Base ID/ZIP code format detected in .env file. Please run config_app.py to set actual credentials and ZIP Code.")
          exit(1) # Exit if placeholders/invalid format found
 
     # 2. Construct Zillow URL and Fetch Data
@@ -193,8 +198,8 @@ if __name__ == "__main__":
 
         if properties_data:
             # 4. Send to Airtable
-            # Updated to pass AIRTABLE_ACCESS_TOKEN
-            success = send_to_airtable(properties_data, AIRTABLE_ACCESS_TOKEN, AIRTABLE_BASE_ID, AIRTABLE_TABLE_NAME)
+            # Updated to pass ZILLOW_ZIP_CODE instead of table name
+            success = send_to_airtable(properties_data, AIRTABLE_ACCESS_TOKEN, AIRTABLE_BASE_ID, ZILLOW_ZIP_CODE)
             if success:
                 logging.info("--- Scraper finished successfully ---")
             else:
