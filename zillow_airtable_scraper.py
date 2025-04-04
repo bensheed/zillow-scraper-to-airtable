@@ -15,8 +15,8 @@ load_dotenv()
 # Use AIRTABLE_ACCESS_TOKEN now, as saved by config_app.py
 AIRTABLE_ACCESS_TOKEN = os.getenv("AIRTABLE_ACCESS_TOKEN")
 AIRTABLE_BASE_ID = os.getenv("AIRTABLE_BASE_ID")
-AIRTABLE_TABLE_NAME = os.getenv("AIRTABLE_TABLE_NAME")
-ZILLOW_SEARCH_URL = os.getenv("ZILLOW_SEARCH_URL")
+AIRTABLE_TABLE_NAME = os.getenv("AIRTABLE_TABLE_NAME") # Note: We might remove this later if creating tables per ZIP
+ZILLOW_ZIP_CODE = os.getenv("ZILLOW_ZIP_CODE") # Changed variable
 
 # --- Functions ---
 
@@ -168,18 +168,24 @@ if __name__ == "__main__":
     logging.info("--- Starting Zillow Scraper ---")
 
     # 1. Check Credentials
-    # Updated to check for AIRTABLE_ACCESS_TOKEN
-    if not all([AIRTABLE_ACCESS_TOKEN, AIRTABLE_BASE_ID, AIRTABLE_TABLE_NAME, ZILLOW_SEARCH_URL]):
-        logging.error("One or more required environment variables (Airtable Access Token, Base ID, Table Name, Zillow URL) are missing in .env. Please run config_app.py first. Exiting.")
+    # Updated to check for ZILLOW_ZIP_CODE
+    if not all([AIRTABLE_ACCESS_TOKEN, AIRTABLE_BASE_ID, AIRTABLE_TABLE_NAME, ZILLOW_ZIP_CODE]):
+        logging.error("One or more required environment variables (Airtable Access Token, Base ID, Table Name, Zillow ZIP Code) are missing in .env. Please run config_app.py first. Exiting.")
         exit(1)
-    # Updated placeholder check
-    if "YOUR_" in AIRTABLE_ACCESS_TOKEN or "YOUR_" in AIRTABLE_BASE_ID or "YOUR_" in AIRTABLE_TABLE_NAME or "YOUR_" in ZILLOW_SEARCH_URL or not AIRTABLE_ACCESS_TOKEN.startswith("pat"): # Basic check for token format
-         logging.warning("Placeholder values or invalid token format detected in .env file. Please run config_app.py to set actual credentials and Zillow URL.")
-         # Decide if you want to exit or proceed
-         exit(1) # Exit if placeholders/invalid token found
+    # Updated placeholder/format check
+    if "YOUR_" in AIRTABLE_ACCESS_TOKEN or not AIRTABLE_ACCESS_TOKEN.startswith("pat") \
+       or "YOUR_" in AIRTABLE_BASE_ID \
+       or "YOUR_" in AIRTABLE_TABLE_NAME \
+       or not (ZILLOW_ZIP_CODE and ZILLOW_ZIP_CODE.isdigit() and len(ZILLOW_ZIP_CODE) == 5):
+         logging.warning("Placeholder values or invalid token/ZIP code format detected in .env file. Please run config_app.py to set actual credentials and ZIP Code.")
+         exit(1) # Exit if placeholders/invalid format found
 
-    # 2. Fetch Data
-    html = fetch_zillow_data(ZILLOW_SEARCH_URL)
+    # 2. Construct Zillow URL and Fetch Data
+    # Construct the URL from the ZIP code
+    zillow_url_to_scrape = f"https://www.zillow.com/homes/for_sale/{ZILLOW_ZIP_CODE}_rb/"
+    logging.info(f"Constructed Zillow URL: {zillow_url_to_scrape}")
+
+    html = fetch_zillow_data(zillow_url_to_scrape)
 
     if html:
         # 3. Parse Data

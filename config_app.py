@@ -170,10 +170,10 @@ HTML_TEMPLATE = """
             </select>
         </div>
 
-        <!-- Step 4: Zillow URL and Save -->
+        <!-- Step 4: Zillow ZIP Code and Save -->
         <div id="final-step-div" class="form-group {{ 'hidden' if not tables }}"> <!-- Show only when tables are loaded -->
-            <label for="zillow_url">Zillow Search URL:</label>
-            <input type="url" id="zillow_url" name="zillow_url" value="{{ config.ZILLOW_SEARCH_URL }}" required>
+            <label for="zip_code">Zillow ZIP Code:</label>
+            <input type="text" id="zip_code" name="zip_code" value="{{ config.ZILLOW_ZIP_CODE }}" pattern="[0-9]{5}" title="Enter a 5-digit ZIP code" required> <!-- Changed to text, added pattern -->
             <input type="submit" name="action" value="save_config" value="Save Configuration">
         </div>
     </form>
@@ -198,7 +198,7 @@ def get_current_config():
         "AIRTABLE_ACCESS_TOKEN": os.getenv("AIRTABLE_ACCESS_TOKEN", ""),
         "AIRTABLE_BASE_ID": os.getenv("AIRTABLE_BASE_ID", ""),
         "AIRTABLE_TABLE_NAME": os.getenv("AIRTABLE_TABLE_NAME", ""),
-        "ZILLOW_SEARCH_URL": os.getenv("ZILLOW_SEARCH_URL", "")
+        "ZILLOW_ZIP_CODE": os.getenv("ZILLOW_ZIP_CODE", "") # Changed key
     }
 
 # --- Airtable API Helper Functions ---
@@ -262,13 +262,13 @@ def config_page():
     access_token = request.form.get('access_token') or request.form.get('access_token_hidden') or request.form.get('access_token_hidden_2') or config.get('AIRTABLE_ACCESS_TOKEN')
     selected_base_id = request.form.get('selected_base_id') or request.form.get('selected_base_id_hidden') or config.get('AIRTABLE_BASE_ID')
     selected_table_name = request.form.get('selected_table_name') or config.get('AIRTABLE_TABLE_NAME')
-    zillow_url = request.form.get('zillow_url') or config.get('ZILLOW_SEARCH_URL')
+    zip_code = request.form.get('zip_code') or config.get('ZILLOW_ZIP_CODE') # Changed variable name
 
     # Update config dict with potentially submitted values for re-rendering the form state correctly
     config['AIRTABLE_ACCESS_TOKEN'] = access_token
     config['AIRTABLE_BASE_ID'] = selected_base_id
     config['AIRTABLE_TABLE_NAME'] = selected_table_name
-    config['ZILLOW_SEARCH_URL'] = zillow_url
+    config['ZILLOW_ZIP_CODE'] = zip_code # Changed key
 
     if request.method == 'POST':
         if action == 'fetch_bases':
@@ -303,20 +303,36 @@ def config_page():
             token_to_save = request.form.get('access_token_hidden_2') or request.form.get('access_token_hidden') or request.form.get('access_token')
             base_id_to_save = request.form.get('selected_base_id_hidden') or request.form.get('selected_base_id')
             table_name_to_save = request.form.get('selected_table_name')
-            zillow_url_to_save = request.form.get('zillow_url')
+            zip_code_to_save = request.form.get('zip_code') # Changed variable name
 
             # Basic validation
-            if token_to_save and base_id_to_save and table_name_to_save and zillow_url_to_save:
-                try:
-                    # Save to .env file
-                    # Note: Using AIRTABLE_ACCESS_TOKEN now instead of AIRTABLE_API_KEY
-                    set_key(dotenv_path, "AIRTABLE_ACCESS_TOKEN", token_to_save)
-                    set_key(dotenv_path, "AIRTABLE_BASE_ID", base_id_to_save)
-                    set_key(dotenv_path, "AIRTABLE_TABLE_NAME", table_name_to_save)
-                    set_key(dotenv_path, "ZILLOW_SEARCH_URL", zillow_url_to_save)
-                    flash('Configuration saved successfully!', 'success')
-                    # Redirect to GET to show the final saved state cleanly and prevent resubmission
-                    return redirect(url_for('config_page'))
+            if token_to_save and base_id_to_save and table_name_to_save and zip_code_to_save: # Changed variable name
+                # Add ZIP code validation (basic 5 digits)
+                if not (zip_code_to_save and zip_code_to_save.isdigit() and len(zip_code_to_save) == 5):
+                     flash('Invalid ZIP Code format. Please enter 5 digits.', 'error')
+                     # Repopulate bases/tables if save fails
+                     if access_token: bases = get_airtable_bases(access_token)
+                     if access_token and selected_base_id: tables = get_airtable_tables(access_token, selected_base_id)
+                else:
+                    try:
+                        # Save to .env file
+                        set_key(dotenv_path, "AIRTABLE_ACCESS_TOKEN", token_to_save)
+                        set_key(dotenv_path, "AIRTABLE_BASE_ID", base_id_to_save)
+                        set_key(dotenv_path, "AIRTABLE_TABLE_NAME", table_name_to_save)
+                        set_key(dotenv_path, "ZILLOW_ZIP_CODE", zip_code_to_save) # Changed key
+                        flash('Configuration saved successfully!', 'success')
+                        # Redirect to GET to show the final saved state cleanly and prevent resubmission
+                        return redirect(url_for('config_page'))
+                    except Exception as e:
+                        flash(f'Error saving configuration: {e}', 'error')
+                        # Repopulate if save fails
+                        if access_token: bases = get_airtable_bases(access_token)
+                        if access_token and selected_base_id: tables = get_airtable_tables(access_token, selected_base_id)
+            else:
+                 flash('Missing required fields for saving. Ensure Base and Table are selected.', 'error')
+                 # Repopulate if save fails due to missing fields
+                 if access_token: bases = get_airtable_bases(access_token)
+                 if access_token and selected_base_id: tables = get_airtable_tables(access_token, selected_base_id)
                 except Exception as e:
                     flash(f'Error saving configuration: {e}', 'error')
                     # Repopulate if save fails
