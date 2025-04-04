@@ -1,6 +1,8 @@
 import os
 import requests
-from flask import Flask, request, render_template_string, flash, redirect, url_for
+import subprocess # Added for running scraper
+import sys # Added for getting python executable
+from flask import Flask, request, render_template_string, flash, redirect, url_for, session # Added session
 from dotenv import load_dotenv, set_key, find_dotenv
 
 # Find the .env file
@@ -134,7 +136,17 @@ HTML_TEMPLATE = """
             {% endfor %}
         {% endif %}
     {% endwith %}
-    <form method="post" id="config-form">
+
+    <!-- Conditionally show Run Scraper button -->
+    {% if session.pop('show_run_button', None) %}
+    <div style="margin-bottom: 20px;">
+        <a href="{{ url_for('run_scraper') }}" id="run-scraper-link" style="background-color: #28a745; width: auto; display: inline-block; padding: 12px 20px; color: white; border: none; border-radius: 6px; cursor: pointer; font-size: 1em; font-weight: 600; text-decoration: none;">Run Scraper Now</a>
+        <span id="run-loader" style="display: none; margin-left: 10px;">🔄 Running...</span>
+    </div>
+    {% endif %}
+    <!-- End Run Scraper button -->
+
+    <form method="post" id="config-form"> <!-- Main form still posts to config_page -->
         <!-- Step 1: Enter Token (JS Submit) -->
         <input type="hidden" name="action" id="form_action" value=""> <!-- Hidden field for action -->
         <div class="form-group">
@@ -147,7 +159,8 @@ HTML_TEMPLATE = """
         <div id="base-select-div" class="form-group {{ 'hidden' if not bases }}">
             <input type="hidden" name="access_token_hidden" value="{{ config.AIRTABLE_ACCESS_TOKEN }}"> <!-- Carry token forward -->
             <label for="base_id">Select Airtable Base:</label>
-            <select id="base_id" name="selected_base_id" onchange="this.form.action='{{ url_for('config_page') }}'; this.form.submit();" required>
+            <!-- Updated onchange to set action value before submitting -->
+            <select id="base_id" name="selected_base_id" onchange="document.getElementById('form_action').value = 'fetch_tables'; this.form.submit();" required>
                 <option value="">-- Select a Base --</option>
                 {% for base in bases %}
                     <option value="{{ base.id }}" {{ 'selected' if base.id == config.AIRTABLE_BASE_ID }}>{{ base.name }} ({{ base.id }})</option>
@@ -157,24 +170,14 @@ HTML_TEMPLATE = """
              <button type="submit" name="action" value="fetch_tables" class="hidden">Fetch Tables</button>
         </div>
 
-        <!-- Step 3: Select Table (populated after selecting base) -->
-        <div id="table-select-div" class="form-group {{ 'hidden' if not tables }}">
+        <!-- Step 3: Zillow ZIP Code and Save -->
+        <!-- Table selection removed - will be determined by ZIP code -->
+        <div id="final-step-div" class="form-group {{ 'hidden' if not config.AIRTABLE_BASE_ID }}"> <!-- Show only when Base is selected -->
              <input type="hidden" name="access_token_hidden_2" value="{{ config.AIRTABLE_ACCESS_TOKEN }}"> <!-- Carry token forward -->
              <input type="hidden" name="selected_base_id_hidden" value="{{ config.AIRTABLE_BASE_ID }}"> <!-- Carry base_id forward -->
-            <label for="table_name">Select Airtable Table:</label>
-            <select id="table_name" name="selected_table_name" required>
-                 <option value="">-- Select a Table --</option>
-                {% for table in tables %}
-                    <option value="{{ table.name }}" {{ 'selected' if table.name == config.AIRTABLE_TABLE_NAME }}>{{ table.name }}</option>
-                {% endfor %}
-            </select>
-        </div>
-
-        <!-- Step 4: Zillow URL and Save -->
-        <div id="final-step-div" class="form-group {{ 'hidden' if not tables }}"> <!-- Show only when tables are loaded -->
-            <label for="zillow_url">Zillow Search URL:</label>
-            <input type="url" id="zillow_url" name="zillow_url" value="{{ config.ZILLOW_SEARCH_URL }}" required>
-            <input type="submit" name="action" value="save_config" value="Save Configuration">
+            <label for="zip_code">Zillow ZIP Code (for scraping and table name):</label>
+            <input type="text" id="zip_code" name="zip_code" value="{{ config.ZILLOW_ZIP_CODE }}" pattern="[0-9]{5}" title="Enter a 5-digit ZIP code" required>
+            <button type="button" id="save-config-btn">Save Configuration</button>
         </div>
     </form>
     </div> <!-- Close container -->
@@ -184,7 +187,14 @@ HTML_TEMPLATE = """
             document.getElementById('form_action').value = 'fetch_bases';
             document.getElementById('config-form').submit();
         });
-        // We might need similar logic for the final save button if this works
+
+        // Add listener for the Save button
+        document.getElementById('save-config-btn').addEventListener('click', function() {
+            document.getElementById('form_action').value = 'save_config';
+            document.getElementById('config-form').action = "{{ url_for('config_page') }}"; // Ensure main form posts to config_page
+            // Optional: Add basic JS validation here if needed before submitting
+            document.getElementById('config-form').submit();
+        });
     </script>
 </body>
 </html>
@@ -197,8 +207,8 @@ def get_current_config():
         # Use AIRTABLE_ACCESS_TOKEN now
         "AIRTABLE_ACCESS_TOKEN": os.getenv("AIRTABLE_ACCESS_TOKEN", ""),
         "AIRTABLE_BASE_ID": os.getenv("AIRTABLE_BASE_ID", ""),
-        "AIRTABLE_TABLE_NAME": os.getenv("AIRTABLE_TABLE_NAME", ""),
-        "ZILLOW_SEARCH_URL": os.getenv("ZILLOW_SEARCH_URL", "")
+        # "AIRTABLE_TABLE_NAME": os.getenv("AIRTABLE_TABLE_NAME", ""), # Removed Table Name
+        "ZILLOW_ZIP_CODE": os.getenv("ZILLOW_ZIP_CODE", "")
     }
 
 # --- Airtable API Helper Functions ---
@@ -250,25 +260,22 @@ def get_airtable_tables(token, base_id):
 
 @app.route('/', methods=['GET', 'POST'])
 def config_page():
-    # --- DEBUG PRINT ---
-    print(f"Request Method: {request.method}, Action Form Value: {request.form.get('action')}")
-    # --- END DEBUG ---
     config = get_current_config()
     bases = []
-    tables = []
+    # tables = [] # Removed tables list
     action = request.form.get('action')
 
     # Preserve state across POST requests using form data
     access_token = request.form.get('access_token') or request.form.get('access_token_hidden') or request.form.get('access_token_hidden_2') or config.get('AIRTABLE_ACCESS_TOKEN')
     selected_base_id = request.form.get('selected_base_id') or request.form.get('selected_base_id_hidden') or config.get('AIRTABLE_BASE_ID')
-    selected_table_name = request.form.get('selected_table_name') or config.get('AIRTABLE_TABLE_NAME')
-    zillow_url = request.form.get('zillow_url') or config.get('ZILLOW_SEARCH_URL')
+    # selected_table_name = request.form.get('selected_table_name') or config.get('AIRTABLE_TABLE_NAME') # Removed table name
+    zip_code = request.form.get('zip_code') or config.get('ZILLOW_ZIP_CODE')
 
     # Update config dict with potentially submitted values for re-rendering the form state correctly
     config['AIRTABLE_ACCESS_TOKEN'] = access_token
     config['AIRTABLE_BASE_ID'] = selected_base_id
-    config['AIRTABLE_TABLE_NAME'] = selected_table_name
-    config['ZILLOW_SEARCH_URL'] = zillow_url
+    # config['AIRTABLE_TABLE_NAME'] = selected_table_name # Removed table name
+    config['ZILLOW_ZIP_CODE'] = zip_code
 
     if request.method == 'POST':
         if action == 'fetch_bases':
@@ -284,49 +291,45 @@ def config_page():
             else:
                 flash("Please enter an Airtable Access Token.", "error")
 
-        # This handles the implicit submission from the base dropdown's onchange event.
-        # We check if selected_base_id is present in the form data (meaning it was just selected or carried over)
-        # and ensure we are not in the middle of saving.
-        elif 'selected_base_id' in request.form and selected_base_id and access_token and action != 'save_config':
-             # Need to fetch bases again to keep the dropdown populated correctly
-             bases = get_airtable_bases(access_token)
-             if bases is None: bases = []
-
-             tables = get_airtable_tables(access_token, selected_base_id)
-             if tables is None: tables = []
-             # Clear table selection when base changes
-             config['AIRTABLE_TABLE_NAME'] = ""
-             selected_table_name = ""
+        # 'fetch_tables' action removed as table is now dynamic
 
         elif action == 'save_config':
             # Final save action - retrieve values from the *correct* hidden fields or inputs
             token_to_save = request.form.get('access_token_hidden_2') or request.form.get('access_token_hidden') or request.form.get('access_token')
             base_id_to_save = request.form.get('selected_base_id_hidden') or request.form.get('selected_base_id')
-            table_name_to_save = request.form.get('selected_table_name')
-            zillow_url_to_save = request.form.get('zillow_url')
+            # table_name_to_save = request.form.get('selected_table_name') # Removed table name
+            zip_code_to_save = request.form.get('zip_code')
 
-            # Basic validation
-            if token_to_save and base_id_to_save and table_name_to_save and zillow_url_to_save:
-                try:
-                    # Save to .env file
-                    # Note: Using AIRTABLE_ACCESS_TOKEN now instead of AIRTABLE_API_KEY
-                    set_key(dotenv_path, "AIRTABLE_ACCESS_TOKEN", token_to_save)
-                    set_key(dotenv_path, "AIRTABLE_BASE_ID", base_id_to_save)
-                    set_key(dotenv_path, "AIRTABLE_TABLE_NAME", table_name_to_save)
-                    set_key(dotenv_path, "ZILLOW_SEARCH_URL", zillow_url_to_save)
-                    flash('Configuration saved successfully!', 'success')
-                    # Redirect to GET to show the final saved state cleanly and prevent resubmission
-                    return redirect(url_for('config_page'))
-                except Exception as e:
-                    flash(f'Error saving configuration: {e}', 'error')
-                    # Repopulate if save fails
-                    if access_token: bases = get_airtable_bases(access_token)
-                    if access_token and selected_base_id: tables = get_airtable_tables(access_token, selected_base_id)
+            # Basic validation - removed table_name_to_save
+            if token_to_save and base_id_to_save and zip_code_to_save:
+                # Add ZIP code validation (basic 5 digits)
+                if not (zip_code_to_save and zip_code_to_save.isdigit() and len(zip_code_to_save) == 5):
+                     flash('Invalid ZIP Code format. Please enter 5 digits.', 'error')
+                     # Repopulate bases if save fails
+                     if access_token: bases = get_airtable_bases(access_token)
+                     # No tables to repopulate
+                else:
+                    try:
+                        # Save to .env file - removed AIRTABLE_TABLE_NAME
+                        set_key(dotenv_path, "AIRTABLE_ACCESS_TOKEN", token_to_save)
+                        set_key(dotenv_path, "AIRTABLE_BASE_ID", base_id_to_save)
+                        # set_key(dotenv_path, "AIRTABLE_TABLE_NAME", table_name_to_save) # Removed
+                        set_key(dotenv_path, "ZILLOW_ZIP_CODE", zip_code_to_save)
+                        flash('Configuration saved successfully!', 'success')
+                        session['show_run_button'] = True # Set flag to show button after redirect
+                        # Redirect to GET to show the final saved state cleanly and prevent resubmission
+                        return redirect(url_for('config_page'))
+                    except Exception as e:
+                        flash(f'Error saving configuration: {e}', 'error')
+                        # Repopulate bases if save fails
+                        if access_token: bases = get_airtable_bases(access_token)
+                        # No tables to repopulate
+            # This else corresponds to the 'if token_to_save and ...'
             else:
-                 flash('Missing required fields for saving. Ensure Base and Table are selected.', 'error')
-                 # Repopulate if save fails due to missing fields
+                 flash('Missing required fields for saving. Ensure Base and ZIP Code are selected and valid.', 'error') # Updated message
+                 # Repopulate bases if save fails due to missing fields
                  if access_token: bases = get_airtable_bases(access_token)
-                 if access_token and selected_base_id: tables = get_airtable_tables(access_token, selected_base_id)
+                 # No tables to repopulate
 
         # If it's a POST but not 'fetch_bases' or 'save_config', and base wasn't just selected,
         # it might be an intermediate state (e.g., table selected). We still need to populate bases/tables.
@@ -338,28 +341,61 @@ def config_page():
                  if tables is None: tables = []
 
 
-    # For GET request: Load config and potentially pre-fetch if token/base_id exist in .env
+    # For GET request: Load config and potentially pre-fetch bases if token exists
     elif request.method == 'GET':
          if config.get('AIRTABLE_ACCESS_TOKEN'):
              bases = get_airtable_bases(config['AIRTABLE_ACCESS_TOKEN'])
              if bases is None: bases = []
-             if config.get('AIRTABLE_BASE_ID'):
-                 # Ensure the saved base_id is still valid for the token
-                 if any(b['id'] == config['AIRTABLE_BASE_ID'] for b in bases):
-                     tables = get_airtable_tables(config['AIRTABLE_ACCESS_TOKEN'], config['AIRTABLE_BASE_ID'])
-                     if tables is None: tables = []
-                 else: # Saved base_id not found for this token, clear it
-                     config['AIRTABLE_BASE_ID'] = ""
-                     config['AIRTABLE_TABLE_NAME'] = ""
-                     set_key(dotenv_path, "AIRTABLE_BASE_ID", "") # Clear from .env too
-                     set_key(dotenv_path, "AIRTABLE_TABLE_NAME", "")
+             # Clear saved Base ID if it's no longer valid for the current token
+             if config.get('AIRTABLE_BASE_ID') and not any(b['id'] == config['AIRTABLE_BASE_ID'] for b in bases):
+                 config['AIRTABLE_BASE_ID'] = ""
+                 set_key(dotenv_path, "AIRTABLE_BASE_ID", "") # Clear from .env too
+                 # Also clear ZIP code if Base becomes invalid? Optional, maybe keep it.
+                 # config['ZILLOW_ZIP_CODE'] = ""
+                 # set_key(dotenv_path, "ZILLOW_ZIP_CODE", "")
 
 
-    # Ensure bases and tables are lists even if None was returned from API calls
+    # Ensure bases list is valid
     if bases is None: bases = []
-    if tables is None: tables = []
+    # tables variable removed
 
-    return render_template_string(HTML_TEMPLATE, config=config, bases=bases, tables=tables)
+    # Pass show_run_button flag from session to template
+    show_run_button = session.get('show_run_button', False)
+
+    return render_template_string(HTML_TEMPLATE, config=config, bases=bases, show_run_button=show_run_button) # Removed tables
+@app.route('/run_scraper', methods=['GET']) # Keep as GET
+def run_scraper():
+    """Triggers the scraper script as a background process."""
+    try:
+        # Ensure config is saved before running
+        config = get_current_config()
+        # Updated check: Removed AIRTABLE_TABLE_NAME
+        if not all([config.get("AIRTABLE_ACCESS_TOKEN"), config.get("AIRTABLE_BASE_ID"), config.get("ZILLOW_ZIP_CODE")]):
+             flash("Configuration is incomplete (missing Token, Base ID, or ZIP Code). Please save configuration before running.", "error")
+             return redirect(url_for('config_page'))
+
+        # Updated check: Removed AIRTABLE_TABLE_NAME
+        if "YOUR_" in config.get("AIRTABLE_ACCESS_TOKEN", "") or not config.get("AIRTABLE_ACCESS_TOKEN", "").startswith("pat") \
+           or "YOUR_" in config.get("AIRTABLE_BASE_ID", "") \
+           or not (config.get("ZILLOW_ZIP_CODE", "").isdigit() and len(config.get("ZILLOW_ZIP_CODE", "")) == 5):
+             flash("Placeholder values or invalid token/Base ID/ZIP code format detected in .env file. Please correct configuration.", "error")
+             return redirect(url_for('config_page'))
+
+        # Get the path to the current python interpreter
+        python_executable = sys.executable
+        scraper_script = os.path.join(os.path.dirname(__file__), 'zillow_airtable_scraper.py')
+        # Use Popen for non-blocking execution
+        # Redirect stdout/stderr to a log file for the scraper process
+        log_path = os.path.join(os.path.dirname(__file__), 'scraper_run.log')
+        with open(log_path, "a") as log_file:
+             process = subprocess.Popen([python_executable, scraper_script], stdout=log_file, stderr=subprocess.STDOUT)
+        flash(f"Scraper process initiated (PID: {process.pid}). Check terminal or scraper_run.log for logs.", "success")
+        session['show_run_button'] = False # Hide button after starting
+    except Exception as e:
+        flash(f"Error starting scraper process: {e}", "error")
+
+    return redirect(url_for('config_page'))
+
 
 
 if __name__ == '__main__':
