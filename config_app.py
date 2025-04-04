@@ -1,6 +1,8 @@
 import os
 import requests
-from flask import Flask, request, render_template_string, flash, redirect, url_for
+import subprocess # Added for running scraper
+import sys # Added for getting python executable
+from flask import Flask, request, render_template_string, flash, redirect, url_for, session # Added session
 from dotenv import load_dotenv, set_key, find_dotenv
 
 # Find the .env file
@@ -134,7 +136,17 @@ HTML_TEMPLATE = """
             {% endfor %}
         {% endif %}
     {% endwith %}
-    <form method="post" id="config-form">
+
+    <!-- Conditionally show Run Scraper button -->
+    {% if session.pop('show_run_button', None) %}
+    <div style="margin-bottom: 20px;">
+        <a href="{{ url_for('run_scraper') }}" id="run-scraper-link" style="background-color: #28a745; width: auto; display: inline-block; padding: 12px 20px; color: white; border: none; border-radius: 6px; cursor: pointer; font-size: 1em; font-weight: 600; text-decoration: none;">Run Scraper Now</a>
+        <span id="run-loader" style="display: none; margin-left: 10px;">🔄 Running...</span>
+    </div>
+    {% endif %}
+    <!-- End Run Scraper button -->
+
+    <form method="post" id="config-form"> <!-- Main form still posts to config_page -->
         <!-- Step 1: Enter Token (JS Submit) -->
         <input type="hidden" name="action" id="form_action" value=""> <!-- Hidden field for action -->
         <div class="form-group">
@@ -147,7 +159,8 @@ HTML_TEMPLATE = """
         <div id="base-select-div" class="form-group {{ 'hidden' if not bases }}">
             <input type="hidden" name="access_token_hidden" value="{{ config.AIRTABLE_ACCESS_TOKEN }}"> <!-- Carry token forward -->
             <label for="base_id">Select Airtable Base:</label>
-            <select id="base_id" name="selected_base_id" onchange="this.form.action='{{ url_for('config_page') }}'; this.form.submit();" required>
+            <!-- Updated onchange to set action value before submitting -->
+            <select id="base_id" name="selected_base_id" onchange="document.getElementById('form_action').value = 'fetch_tables'; this.form.submit();" required>
                 <option value="">-- Select a Base --</option>
                 {% for base in bases %}
                     <option value="{{ base.id }}" {{ 'selected' if base.id == config.AIRTABLE_BASE_ID }}>{{ base.name }} ({{ base.id }})</option>
@@ -174,7 +187,7 @@ HTML_TEMPLATE = """
         <div id="final-step-div" class="form-group {{ 'hidden' if not tables }}"> <!-- Show only when tables are loaded -->
             <label for="zip_code">Zillow ZIP Code:</label>
             <input type="text" id="zip_code" name="zip_code" value="{{ config.ZILLOW_ZIP_CODE }}" pattern="[0-9]{5}" title="Enter a 5-digit ZIP code" required> <!-- Changed to text, added pattern -->
-            <input type="submit" name="action" value="save_config" value="Save Configuration">
+            <button type="button" id="save-config-btn">Save Configuration</button> <!-- Changed to type="button" -->
         </div>
     </form>
     </div> <!-- Close container -->
@@ -184,7 +197,14 @@ HTML_TEMPLATE = """
             document.getElementById('form_action').value = 'fetch_bases';
             document.getElementById('config-form').submit();
         });
-        // We might need similar logic for the final save button if this works
+
+        // Add listener for the Save button
+        document.getElementById('save-config-btn').addEventListener('click', function() {
+            document.getElementById('form_action').value = 'save_config';
+            document.getElementById('config-form').action = "{{ url_for('config_page') }}"; // Ensure main form posts to config_page
+            // Optional: Add basic JS validation here if needed before submitting
+            document.getElementById('config-form').submit();
+        });
     </script>
 </body>
 </html>
@@ -250,9 +270,6 @@ def get_airtable_tables(token, base_id):
 
 @app.route('/', methods=['GET', 'POST'])
 def config_page():
-    # --- DEBUG PRINT ---
-    print(f"Request Method: {request.method}, Action Form Value: {request.form.get('action')}")
-    # --- END DEBUG ---
     config = get_current_config()
     bases = []
     tables = []
@@ -284,19 +301,24 @@ def config_page():
             else:
                 flash("Please enter an Airtable Access Token.", "error")
 
-        # This handles the implicit submission from the base dropdown's onchange event.
-        # We check if selected_base_id is present in the form data (meaning it was just selected or carried over)
-        # and ensure we are not in the middle of saving.
-        elif 'selected_base_id' in request.form and selected_base_id and access_token and action != 'save_config':
-             # Need to fetch bases again to keep the dropdown populated correctly
-             bases = get_airtable_bases(access_token)
-             if bases is None: bases = []
+        # Explicitly handle the 'fetch_tables' action triggered by base selection
+        elif action == 'fetch_tables':
+             if access_token and selected_base_id:
+                 # Need to fetch bases again to keep the dropdown populated correctly
+                 bases = get_airtable_bases(access_token)
+                 if bases is None: bases = []
 
-             tables = get_airtable_tables(access_token, selected_base_id)
-             if tables is None: tables = []
-             # Clear table selection when base changes
-             config['AIRTABLE_TABLE_NAME'] = ""
-             selected_table_name = ""
+                 tables = get_airtable_tables(access_token, selected_base_id)
+                 if tables is None: tables = []
+                 # Clear table selection when base changes
+                 config['AIRTABLE_TABLE_NAME'] = ""
+                 selected_table_name = ""
+             else:
+                 flash("Access Token and Base selection are required to fetch tables.", "error")
+                 # Attempt to repopulate bases if token exists
+                 if access_token:
+                     bases = get_airtable_bases(access_token)
+                     if bases is None: bases = []
 
         elif action == 'save_config':
             # Final save action - retrieve values from the *correct* hidden fields or inputs
@@ -321,25 +343,18 @@ def config_page():
                         set_key(dotenv_path, "AIRTABLE_TABLE_NAME", table_name_to_save)
                         set_key(dotenv_path, "ZILLOW_ZIP_CODE", zip_code_to_save) # Changed key
                         flash('Configuration saved successfully!', 'success')
+                        session['show_run_button'] = True # Set flag to show button after redirect
                         # Redirect to GET to show the final saved state cleanly and prevent resubmission
                         return redirect(url_for('config_page'))
+                    # Correctly indented except block for the try starting on line 317
                     except Exception as e:
                         flash(f'Error saving configuration: {e}', 'error')
                         # Repopulate if save fails
                         if access_token: bases = get_airtable_bases(access_token)
                         if access_token and selected_base_id: tables = get_airtable_tables(access_token, selected_base_id)
+            # This else corresponds to the 'if token_to_save and ...' on line 309
             else:
-                 flash('Missing required fields for saving. Ensure Base and Table are selected.', 'error')
-                 # Repopulate if save fails due to missing fields
-                 if access_token: bases = get_airtable_bases(access_token)
-                 if access_token and selected_base_id: tables = get_airtable_tables(access_token, selected_base_id)
-                except Exception as e:
-                    flash(f'Error saving configuration: {e}', 'error')
-                    # Repopulate if save fails
-                    if access_token: bases = get_airtable_bases(access_token)
-                    if access_token and selected_base_id: tables = get_airtable_tables(access_token, selected_base_id)
-            else:
-                 flash('Missing required fields for saving. Ensure Base and Table are selected.', 'error')
+                 flash('Missing required fields for saving. Ensure Base, Table, and ZIP Code are selected and valid.', 'error')
                  # Repopulate if save fails due to missing fields
                  if access_token: bases = get_airtable_bases(access_token)
                  if access_token and selected_base_id: tables = get_airtable_tables(access_token, selected_base_id)
@@ -376,6 +391,38 @@ def config_page():
     if tables is None: tables = []
 
     return render_template_string(HTML_TEMPLATE, config=config, bases=bases, tables=tables)
+@app.route('/run_scraper', methods=['GET']) # Keep as GET
+def run_scraper():
+    """Triggers the scraper script as a background process."""
+    try:
+        # Ensure config is saved before running
+        config = get_current_config()
+        if not all([config.get("AIRTABLE_ACCESS_TOKEN"), config.get("AIRTABLE_BASE_ID"), config.get("AIRTABLE_TABLE_NAME"), config.get("ZILLOW_ZIP_CODE")]):
+             flash("Configuration is incomplete. Please save configuration before running.", "error")
+             return redirect(url_for('config_page'))
+
+        if "YOUR_" in config.get("AIRTABLE_ACCESS_TOKEN", "") or not config.get("AIRTABLE_ACCESS_TOKEN", "").startswith("pat") \
+           or "YOUR_" in config.get("AIRTABLE_BASE_ID", "") \
+           or "YOUR_" in config.get("AIRTABLE_TABLE_NAME", "") \
+           or not (config.get("ZILLOW_ZIP_CODE", "").isdigit() and len(config.get("ZILLOW_ZIP_CODE", "")) == 5):
+             flash("Placeholder values or invalid token/ZIP code format detected in .env file. Please correct configuration.", "error")
+             return redirect(url_for('config_page'))
+
+        # Get the path to the current python interpreter
+        python_executable = sys.executable
+        scraper_script = os.path.join(os.path.dirname(__file__), 'zillow_airtable_scraper.py')
+        # Use Popen for non-blocking execution
+        # Redirect stdout/stderr to a log file for the scraper process
+        log_path = os.path.join(os.path.dirname(__file__), 'scraper_run.log')
+        with open(log_path, "a") as log_file:
+             process = subprocess.Popen([python_executable, scraper_script], stdout=log_file, stderr=subprocess.STDOUT)
+        flash(f"Scraper process initiated (PID: {process.pid}). Check terminal or scraper_run.log for logs.", "success")
+        session['show_run_button'] = False # Hide button after starting
+    except Exception as e:
+        flash(f"Error starting scraper process: {e}", "error")
+
+    return redirect(url_for('config_page'))
+
 
 
 if __name__ == '__main__':
